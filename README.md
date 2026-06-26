@@ -10,11 +10,18 @@
 
 ---
 
-## Engineering Log & Recent Updates
+## 📂 Repository Architecture
 
-### [24 to 25 Jun 2026] Ingestion Pipeline Refactoring & Multi-Format Support
-* **Issue:** The initial "bottom-up" row parser threw `Data header not found` errors, tripping over empty trailing cells, summary statistics blocks, and non-numeric unit rows in multi-tab DVS workbooks.
-* **Resolution:** 1. Rewrote `src/ingestion.py` to use a top-down keyword search engine that targets the `DVS Data` sheet and locks onto the row containing both `"Time"` and `"Mass"`.
-  2. Implemented an automated type-coercion layer (`pd.to_numeric`) that cleanly turns formatting rows (like unit definitions) into `NaN` values and strips them out.
-  3. Created a feature-isolation step in the master notebook, successfully condensing an expanded 94-column structural concatenation down to a pristine 7-column kinetics DataFrame (`30,076` clean entries).
-* **Legacy Format Expansion:** Expanded the script loop to find and parse older `*.xls` files alongside standard `*.xlsx` variants. Added an extension check to dynamically switch underlying spreadsheet engines (`openpyxl` for modern xml files, `xlrd` for legacy binary files).
+This repository contains an automated data pipeline for processing Dynamic Vapor Sorption (DVS) experimental data and fitting kinetic models.
+
+```text
+├── data/
+│   ├── raw/            # Raw .xls and .xlsx DVS data files
+│   └── processed/      # Exported kinetic parameters and pore data
+├── notebooks/
+│   └── sorption_kinetics_pipeline.ipynb  # Main pipeline workspace
+├── src/
+│   ├── __init__.py
+│   └── ingestion.py    # Multi-sheet Excel parsing engine (xlrd/openpyxl)
+├── README.md
+└── requirements.txt
