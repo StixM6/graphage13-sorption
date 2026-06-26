@@ -4,7 +4,7 @@
 
 * `data/raw/` — Contains raw DVS files (`*.xlsx` and legacy `*.xls` formats).
 * `notebooks/` — Development sandbox.
-    * `data_ingestion.ipynb` — Pipeline checkpoint. Ingests all raw files, handles exception boundaries, and subsets data into a pristine 7-column matrix (`kinetic_df`).
+    * `sorption_kinetics_pipeline.ipynb` — Pipeline checkpoint. Ingests all raw files, handles exception boundaries, and subsets data into a pristine 7-column matrix (`kinetic_df`).
 * `src/` — Production-ready modular script files.
     * `ingestion.py` — Core parser featuring dynamic keyword-matching engine and multi-format engine switching (`openpyxl` / `xlrd`).
 
