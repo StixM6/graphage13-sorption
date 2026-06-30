@@ -6,6 +6,7 @@ from typing import Tuple, Dict, Any, List
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+#the main function to parse a single DVS Excel file
 def parse_dvs_excel(file_path: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]:
     """
     Parses a single DVS Excel file to extract both kinetic data (time-series)
@@ -34,8 +35,9 @@ def parse_dvs_excel(file_path: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str,
     # Scan top-down. A good header row will have a high number of text labels.
     best_candidate_row = -1
     max_text_cells = 0
+
     for idx, row in meta_df.iterrows():
-        text_cells = sum(1 for cell in row if isinstance(cell, str) and cell.strip() != '')
+        text_cells = sum(1 for cell in row if isinstance(cell, str) and cell.strip() != '') #counts how many cells in this row are plain text (strings) and not empty.
         if text_cells > max_text_cells and text_cells >= 2:
             max_text_cells = text_cells
             best_candidate_row = idx
@@ -47,15 +49,15 @@ def parse_dvs_excel(file_path: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str,
 
     # --- 2. Metadata Extraction ---
     metadata = {'source_file': file_path.name}
-    meta_block = meta_df.iloc[:header_row_index]
+    meta_block = meta_df.iloc[:header_row_index] #take all rows from the start up to (but not including) the header row
     
     junk_names = ['active reservoir:', 'new baskets', 'unknown_sample', '', 'none']
     
     for _, row in meta_block.iterrows():
-        valid_cells = row.dropna().values
+        valid_cells = row.dropna().values #Removes any empty cells from the row and converts the remaining cells to a simple list.
         if len(valid_cells) >= 2:
-            key = str(valid_cells[0]).strip().lower()
-            val = str(valid_cells[1]).strip()
+            key = str(valid_cells[0]).strip().lower() #Converts the first cell to a string, removes spaces and makes it lowercase.
+            val = str(valid_cells[1]).strip()         #converts the second cell to a string and removes spaces.
             
             if "sample" in key and not any(junk in val.lower() for junk in junk_names):
                 metadata['sample_name'] = val.lstrip(':').strip()
@@ -89,12 +91,12 @@ def parse_dvs_excel(file_path: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str,
     dvs_data_df.columns = dvs_data_df.columns.astype(str).str.lower().str.strip().str.replace(r'[^a-z0-9_]+', '_', regex=True)
     
     if not iso_report_df.empty:
-        iso_report_df.columns = iso_report_df.columns.astype(str).str.lower().str.strip().str.replace(r'[^a-z0-9_]+', '_', regex=True)
+        iso_report_df.columns = iso_report_df.columns.astype(str).str.lower().str.strip().str.replace(r'[^a-z0-9_]+', '_', regex=True) #replaces any non-alphanumeric characters in the column names with underscores for consistency.
     
     time_col = next((col for col in dvs_data_df.columns if 'time' in col), None)
     if time_col:
-        dvs_data_df[time_col] = pd.to_numeric(dvs_data_df[time_col], errors='coerce')
-        dvs_data_df.dropna(subset=[time_col], inplace=True)
+        dvs_data_df[time_col] = pd.to_numeric(dvs_data_df[time_col], errors='coerce') #tries to convert the time column to numeric values, setting any non-convertible entries to NaN.
+        dvs_data_df.dropna(subset=[time_col], inplace=True) #removes any rows where the time column is NaN, ensuring that only valid time-series data remains.
 
     data_package = {
         'kinetic_data': dvs_data_df,
@@ -102,12 +104,12 @@ def parse_dvs_excel(file_path: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str,
     }
 
     logging.info(f"Successfully parsed {len(dvs_data_df)} kinetic points and {len(iso_report_df)} isotherm points.")
-    return data_package, metadata
+    return data_package, metadata #returns a tuple containing the data package and metadata dictionary.
 
 def ingest_sorption_data(data_directory: Path) -> List[Tuple[Dict[str, pd.DataFrame], Dict[str, Any]]]:
     """Scans a directory for .xlsx and .xls files and parses each one."""
     logging.info(f"Starting ingestion from directory: {data_directory}")
-    excel_files = list(data_directory.glob("*.xlsx")) + list(data_directory.glob("*.xls"))
+    excel_files = list(data_directory.glob("*.xlsx")) + list(data_directory.glob("*.xls")) #finds all Excel files in the specified directory, both .xlsx and .xls formats and combines them into a single list.
     
     if not excel_files:
         logging.warning("No Excel files found in the specified directory.")
