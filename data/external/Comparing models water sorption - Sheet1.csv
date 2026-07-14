@@ -1,0 +1,23 @@
+Sorption,,,,,,,,,
+PP,GPA,GPA250,Comments,0.25,Comments on 0.25,4,Comments on 4,80,Comments on 80
+10,PA,PA/LA,,LA,Different model,PA,,PA,P bigger
+20,PA,PA,P component much bigger,PA,P bigger,PA,P much bigger,PA,P bigger
+30,PA,PA,A component much bigger,PA,,LA,Different model ,LA,Different model
+40,LA,PA/LA,,LA,,LA,L not 0,LA,L contributes more
+50,LA,PA/LA,L bigger than A,LA,,LA,,LA,
+60,LA,PA/LA,Similar contributions,LA,,LA,About equal contributions,LA,
+70,LA,LA,,A,Different model,LA,,LA,
+80,A,A,,A,,LA,Different model ,A,
+90,LA,LA,,PA,,PA,,PA,P barely contributes
+,,,,,,,,,
+Desorption,,,,,,,,,
+PP,GPA,GPA250,,0.25,Comments on 0.25,4,Comments on 4,80,Comments on 80
+80,WA,WA,,WA,,LA  ,Different model,WA,
+70,WA,WA,,WA,,WA,,WA,Barely any Avrami
+60,WA,WA,Weibull domaintaes (like GPA),WA,,WA,,WA,
+50,WA,WA,Avrami dominates (unlike GPA),WA,,WA,,WA/WL,Different model
+40,PA,PA/WL,,PA,,LA/WL,Different model,LA/WL,Different model
+30,PA,PA/WL,,PA,,PA,,WE/WL,Different model
+20,PA,PA/WL,Components further apart,PA,,PA,,LA/WL,Different model
+10,WL,PA/WL,Components more equal,PA,Different model,PA,Different model,PA,Different model
+0,WL,WL,,PA,Different model,WL,,WE,Different model

@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import traceback
-from scipy.optimize import curve_fit
+import warnings
+from scipy.optimize import curve_fit, OptimizeWarning
 
 # ==========================================
 # 1. THE KINETIC MODEL LIBRARY
@@ -31,113 +32,135 @@ def weibull_model(t, M_eq, k, n):
     """Weibull (Statistical spread of energies)"""
     return M_eq * (1 - np.exp(-np.power(k * t, n)))
 
-# Hybrid Examples
+# --- Hybrids ---
 def hybrid_pso_avrami(t, M_eq1, k1, M_eq2, k2, n):
     return pso_model(t, M_eq1, k1) + avrami_model(t, M_eq2, k2, n)
 
 def hybrid_langmuir_avrami(t, M_eq1, K1, M_eq2, k2, n):
     return langmuir_model(t, M_eq1, K1) + avrami_model(t, M_eq2, k2, n)
 
+def hybrid_weibull_avrami(t, M_eq1, k1, n1, M_eq2, k2, n2):
+    return weibull_model(t, M_eq1, k1, n1) + avrami_model(t, M_eq2, k2, n2)
 
-# Dictionary mapping names to functions and parameter counts (k)
+def hybrid_weibull_langmuir(t, M_eq1, k1, n1, M_eq2, k2):
+    return weibull_model(t, M_eq1, k1, n1) + langmuir_model(t, M_eq2, k2)
+
+# Dictionary mapped to exactly match Paper 1 abbreviations
 MODELS = {
-    'PSO': {'func': pso_model, 'k': 2},
-    'Avrami': {'func': avrami_model, 'k': 3},
-    'Langmuir': {'func': langmuir_model, 'k': 2},
+    'P': {'func': pso_model, 'k': 2},
+    'A': {'func': avrami_model, 'k': 3},
+    'L': {'func': langmuir_model, 'k': 2},
     'LDF': {'func': ldf_model, 'k': 2},
-    'Fickian': {'func': fickian_model, 'k': 1},
-    'Weibull': {'func': weibull_model, 'k': 3},
-    'PSO-Avrami': {'func': hybrid_pso_avrami, 'k': 5},
-    'Langmuir-Avrami': {'func': hybrid_langmuir_avrami, 'k': 5}
+    'F': {'func': fickian_model, 'k': 1},
+    'W': {'func': weibull_model, 'k': 3},
+    'PA': {'func': hybrid_pso_avrami, 'k': 5},
+    'LA': {'func': hybrid_langmuir_avrami, 'k': 5},
+    'WA': {'func': hybrid_weibull_avrami, 'k': 6},
+    'WL': {'func': hybrid_weibull_langmuir, 'k': 5}
+}
+
+# Map showing which parameter index corresponds to M_eq for dynamic bounding
+MEQ_INDICES = {
+    'F': [], 'LDF': [0], 'L': [0], 'P': [0], 'A': [0], 'W': [0],
+    'PA': [0, 2], 'LA': [0, 2], 'WL': [0, 3], 'WA': [0, 3]
+}
+
+# Map showing which parameter index corresponds to an exponent (n) to prevent overflows
+EXP_INDICES = {
+    'F': [], 'LDF': [], 'L': [], 'P': [], 'A': [2], 'W': [2],
+    'PA': [4], 'LA': [4], 'WL': [2], 'WA': [2, 5]
 }
 
 # ==========================================
 # 2. THE FITTER & BAYESIAN SELECTION LOGIC
 # ==========================================
 
-def fit_stage_kinetics(time_array, mass_array):
+def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
     """
     Fits all candidate models to a single stage's time/mass data.
     Computes parameter errors via covariance, calculates BIC, and ranks models.
+    Returns a dictionary suitable for high-throughput pipeline ingestion.
     """
-    # Ensure inputs are clean numpy arrays
-    time_array = np.array(time_array, dtype=float)
+    # Suppress non-fatal solver warnings to keep terminal clean
+    warnings.simplefilter("ignore", OptimizeWarning)
+    warnings.simplefilter("ignore", RuntimeWarning)
+    
+    # Force minimal time padding to prevent log(0) or 1/t crashing
+    time_array = np.maximum(np.array(time_array, dtype=float), 1e-10)
     mass_array = np.array(mass_array, dtype=float)
     
     n_points = len(time_array)
     max_mass = np.max(mass_array) if len(mass_array) > 0 else 1.0
+    
+    # Safely unpack dynamic pipeline guesses
+    meq = m_eq_guess if m_eq_guess is not None else max_mass
+    kg = k_guess if k_guess is not None else 0.1
+
     results = []
 
     for name, meta in MODELS.items():
         k_param = meta['k']
         
-        # Dynamic initial guesses based on parameter count
-        if k_param == 1:
-            p0 = [1.0]
-        elif k_param == 2:
-            p0 = [max_mass, 0.1]
-        elif k_param == 3:
-            p0 = [max_mass, 0.1, 1.0]
-        elif k_param == 5:
-            p0 = [max_mass/2, 0.1, max_mass/2, 0.1, 1.0]
+        # 1. Dynamic Guesses based on model architecture
+        if name == 'F': p0 = [kg]
+        elif name in ['LDF', 'L', 'P']: p0 = [meq, kg]
+        elif name in ['A', 'W']: p0 = [meq, kg, 1.0]
+        elif name in ['PA', 'LA']: p0 = [meq/2, kg, meq/2, kg, 1.0]
+        elif name == 'WL': p0 = [meq/2, kg, 1.0, meq/2, kg]
+        elif name == 'WA': p0 = [meq/2, kg, 1.0, meq/2, kg, 1.0]
+        else: p0 = [1.0] * k_param
+
+        # 2. Physical Guardrails (Bounding)
+        lower_bounds = [1e-7] * k_param
+        upper_bounds = [np.inf] * k_param
+        
+        # Allow M_eq to freely swing positive or negative for Sorption/Desorption
+        for idx in MEQ_INDICES.get(name, []):
+            lower_bounds[idx] = -np.inf
+            upper_bounds[idx] = np.inf
             
-        # Define explicit bounds matching the exact parameter count to avoid curve_fit broadcast issues
-        bounds = ([0.0] * k_param, [np.inf] * k_param)
+        # Cap exponents (n) to 4.0 to physically prevent np.power math overflows and solver hangs
+        for idx in EXP_INDICES.get(name, []):
+            upper_bounds[idx] = 4.0
+
+        bounds = (lower_bounds, upper_bounds)
             
         try:
-            # curve_fit returns optimal parameters (popt) and the covariance matrix (pcov)
+            # Added ftol and xtol, and reduced maxfev to strictly prevent solver infinite loops
             popt, pcov = curve_fit(
                 meta['func'], time_array, mass_array, 
-                p0=p0, bounds=bounds, maxfev=10000
+                p0=p0, bounds=bounds, 
+                maxfev=2000, ftol=1e-5, xtol=1e-5
             )
             
-            # Extract standard errors from the diagonal of the covariance matrix
-            perr = np.sqrt(np.diag(pcov))
-            
-            # Calculate Residual Sum of Squares (RSS)
             predictions = meta['func'](time_array, *popt)
             rss = np.sum((mass_array - predictions)**2)
+            if rss <= 0: rss = 1e-15
             
-            # Safeguard against RSS being perfectly 0 (which would break log)
-            if rss <= 0:
-                rss = 1e-15
-            
-            # Calculate BIC
+            # Bayesian Information Criterion
             bic = n_points * np.log(rss / n_points) + k_param * np.log(n_points)
             
-            # Formatting parameters and uncertainties into strings for clean output
-            param_str = ", ".join([f"{val:.4f}±{err:.4f}" for val, err in zip(popt, perr)])
-            
-            # Extract Avrami exponent (n) if applicable
-            avrami_n = None
-            if 'Avrami' in name:
-                avrami_n = popt[-1] # n is always the last parameter in our definitions
-                
             results.append({
                 'Model': name,
                 'BIC': bic,
-                'RSS': rss,
-                'Parameters (±SE)': param_str,
-                'Avrami n': round(avrami_n, 3) if avrami_n else None,
-                'popt': popt
+                'RSS': rss
             })
             
-        except Exception as e:
-            # Model failed to converge (silently skip or print for debugging)
+        except Exception:
+            # Model failed to converge, move onto the next candidate
             continue
 
     if not results:
-        return pd.DataFrame()
+        return {'best_model': 'Fit Failed', 'delta_bic': np.nan, 'df': pd.DataFrame()}
 
-    # Create DataFrame and calculate Delta BIC
+    # Rank results by Delta BIC
     df_results = pd.DataFrame(results)
     min_bic = df_results['BIC'].min()
     df_results['Delta_BIC'] = df_results['BIC'] - min_bic
-    
-    # Sort by best fit (lowest BIC)
     df_results = df_results.sort_values('Delta_BIC').reset_index(drop=True)
-    
-    # Flag statistical ties (Delta BIC < 6 is a good standard rule of thumb)
-    df_results['Statistical Tie'] = df_results['Delta_BIC'] < 6.0
 
-    return df_results
+    return {
+        'best_model': df_results.iloc[0]['Model'],
+        'delta_bic': df_results.iloc[1]['Delta_BIC'] if len(df_results) > 1 else np.nan,
+        'df': df_results
+    }
