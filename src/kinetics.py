@@ -23,19 +23,43 @@ def exp_model(t, M_eq, k):
     return M_eq * (1 - np.exp(-k * t))
 
 def hyperbola_model(t, M_eq, k):
-    """Hyperbolic saturation: M_eq^2*k*t / (1 + M_eq*k*t). This is the integrated form of
-    Paper 1's PSO rate law (dtheta/dt = k2*(theta0-theta)^2). The model previously coded
-    as 'langmuir_model' was algebraically this same hyperbola under K = M_eq*k, but Paper
-    1's real Langmuir ODE is exp_model above, not this — so the old 'L' was actually a
-    mislabeled duplicate of PSO, not a real second model. Only PSO's form survives here."""
-    return (M_eq**2 * k * t) / (1 + M_eq * k * t)
+    """PSO hyperbola with a signed equilibrium displacement.
+
+    For positive adsorption this is Paper 1's original integrated PSO equation:
+
+        M(t) = M_eq**2 * k2 * t / (1 + M_eq * k2 * t)
+
+    Here ``k`` is the physical PSO rate constant ``k2`` rather than a combined observed
+    rate, so the equilibrium capacity remains explicit in the kinetic timescale. For a
+    negative zero-based desorption trace, ``M_eq*abs(M_eq)`` supplies the curve's sign
+    while ``abs(M_eq)`` keeps the denominator positive. This signed extension is exactly
+    the published equation whenever ``M_eq`` is positive and avoids a false pole when it
+    is negative.
+
+    The old coded 'Langmuir' was the same hyperbolic family under a different parameter
+    name.  Paper 1's stated Langmuir ODE is instead represented by ``exp_model``.
+    """
+    return (M_eq * abs(M_eq) * k * t) / (1 + abs(M_eq) * k * t)
 
 def stretched_exp_model(t, M_eq, k, n):
     """Stretched exponential: M_eq*(1-exp(-(k*t)^n)). Covers both Paper 1's Avrami
-    (eq 4, integrated) and its Weibull (eq 5) — they are the same function, related by
-    k_avrami = k_weibull^n. This collapse is inherent to Paper 1's own equations, not an
-    artifact of this codebase."""
+    (eq 4, integrated) and its Weibull (eq 5). With Paper 1's notation, k_avrami=1/a
+    and n=b; they are therefore the same curve. This collapse is inherent to Paper 1's
+    equations, not an artifact of this codebase."""
     return M_eq * (1 - np.exp(-np.power(k * t, n)))
+
+def elovich_model(t, alpha, beta):
+    """Positive Elovich displacement magnitude: ln(1 + alpha*beta*t) / beta.
+
+    ``alpha`` is the initial rate because the derivative at t=0 is alpha. ``beta``
+    controls how quickly that rate slows as the occupied surface becomes increasingly
+    heterogeneous. The fitter applies the stage direction separately, allowing both
+    parameters to remain positive when a zero-based desorption trace is negative.
+
+    Unlike EXP, HYP and SE, Elovich has no finite equilibrium plateau. It is therefore
+    included only for desorption, as requested for comparison with Paper 1.
+    """
+    return np.log1p(alpha * beta * t) / beta
 
 # --- Hybrids ---
 def hybrid_hyperbola_stretched_exp(t, M_eq1, k1, M_eq2, k2, n):
@@ -61,29 +85,33 @@ MODELS = {
     'HYP': {'func': hyperbola_model, 'k': 2},
     'SE': {'func': stretched_exp_model, 'k': 3},
     'HYP_SE': {'func': hybrid_hyperbola_stretched_exp, 'k': 5},
-    'SE2': {'func': hybrid_double_stretched_exp, 'k': 6}
+    'SE2': {'func': hybrid_double_stretched_exp, 'k': 6},
+    'ELO': {'func': elovich_model, 'k': 2, 'directions': {'desorption'}}
 }
 
 # Map showing which parameter index corresponds to M_eq for dynamic bounding
 MEQ_INDICES = {
     'F': [], 'EXP': [0], 'HYP': [0], 'SE': [0],
-    'HYP_SE': [0, 2], 'SE2': [0, 3]
+    'HYP_SE': [0, 2], 'SE2': [0, 3], 'ELO': []
 }
 
 # Map showing which parameter index corresponds to an exponent (n) to prevent overflows
 EXP_INDICES = {
     'F': [], 'EXP': [], 'HYP': [], 'SE': [2],
-    'HYP_SE': [4], 'SE2': [2, 5]
+    'HYP_SE': [4], 'SE2': [2, 5], 'ELO': []
 }
 
 # ==========================================
 # 2. THE FITTER & BAYESIAN SELECTION LOGIC
 # ==========================================
 
-def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
+def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None,
+                       direction=None):
     """
     Fits all candidate models to a single stage's time/mass data.
     Computes parameter errors via covariance, calculates BIC, and ranks models.
+    ``direction`` should be ``'sorption'`` or ``'desorption'``. If omitted, it is
+    inferred from the sign of the final portion of the zero-based mass trace.
     Returns a dictionary suitable for high-throughput pipeline ingestion.
     """
     # Suppress non-fatal solver warnings to keep terminal clean
@@ -93,6 +121,16 @@ def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
     # Force minimal time padding to prevent log(0) or 1/t crashing
     time_array = np.maximum(np.array(time_array, dtype=float), 1e-10)
     mass_array = np.array(mass_array, dtype=float)
+
+    if direction is None:
+        tail_size = max(1, min(len(mass_array), max(3, len(mass_array) // 10)))
+        tail_displacement = np.median(mass_array[-tail_size:]) if len(mass_array) else 0.0
+        stage_direction = 'desorption' if tail_displacement < 0 else 'sorption'
+    else:
+        stage_direction = str(direction).strip().lower()
+
+    if stage_direction not in {'sorption', 'desorption', 'baseline'}:
+        raise ValueError("direction must be 'sorption', 'desorption', or 'baseline'")
     
     n_points = len(time_array)
     if len(mass_array) > 0:
@@ -109,16 +147,22 @@ def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
     kg = k_guess if k_guess is not None else 0.1
 
     def _hyp_k_guess(m_guess, rate_guess):
-        """HYP's k has units of mass^-1 time^-1, unlike EXP/SE's 1/time rate — the two
-        are related via k_hyp = k_exp / (M_eq * ln2) by matching each model's half-time.
-        Rescale here so HYP starts from a comparable timescale instead of reusing the
-        exponential-family guess raw, which is off by a factor of ~M_eq."""
-        m_safe = m_guess if abs(m_guess) > 1e-9 else 1e-9
-        return rate_guess / (abs(m_safe) * np.log(2))
+        """Convert an exponential rate guess to the physical PSO rate constant.
+
+        EXP reaches half its plateau at ln(2)/k_exp, while HYP reaches half its
+        plateau at 1/(|M_eq|*k2). Equating those times gives
+        k2=k_exp/(|M_eq|*ln(2)).
+        """
+        m_safe = max(abs(m_guess), 1e-9)
+        return rate_guess / (m_safe * np.log(2))
 
     results = []
 
     for name, meta in MODELS.items():
+        allowed_directions = meta.get('directions')
+        if allowed_directions is not None and stage_direction not in allowed_directions:
+            continue
+
         k_param = meta['k']
 
         # 1. Dynamic Guesses based on model architecture
@@ -126,13 +170,20 @@ def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
         elif name == 'EXP': p0 = [meq, kg]
         elif name == 'HYP': p0 = [meq, _hyp_k_guess(meq, kg)]
         elif name == 'SE': p0 = [meq, kg, 1.0]
-        elif name == 'HYP_SE': p0 = [meq/2, _hyp_k_guess(meq/2, kg), meq/2, kg, 1.0]
+        elif name == 'HYP_SE': p0 = [
+            meq/2, _hyp_k_guess(meq/2, kg), meq/2, kg, 1.0
+        ]
         elif name == 'SE2':
             # The two components are swap-symmetric (component 1 <-> component 2 gives
             # an identical curve), so an identical seed for both gives the optimizer no
             # basis to separate them. Bias the split (70/30) and offset each component's
             # k and n so the search starts away from the degenerate symmetric point.
             p0 = [meq*0.7, kg*1.5, 0.8, meq*0.3, kg*0.5, 2.0]
+        elif name == 'ELO':
+            # Elovich's initial slope is alpha. Match it to the initial slope of the
+            # exponential seed (|M_eq|*k), and start beta at the inverse stage size.
+            magnitude = max(abs(meq), 1e-7)
+            p0 = [max(magnitude * kg, 1e-7), 1.0 / magnitude]
         else: p0 = [1.0] * k_param
 
         # 2. Physical Guardrails (Bounding)
@@ -149,16 +200,24 @@ def fit_stage_kinetics(time_array, mass_array, m_eq_guess=None, k_guess=None):
             upper_bounds[idx] = 4.0
 
         bounds = (lower_bounds, upper_bounds)
+
+        # Elovich is defined as a positive displacement magnitude. Desorption data are
+        # stored as negative zero-based changes, so apply the sign outside the model;
+        # alpha and beta remain positive and retain their standard interpretation.
+        if name == 'ELO':
+            fit_func = lambda t, alpha, beta: -elovich_model(t, alpha, beta)
+        else:
+            fit_func = meta['func']
             
         try:
             # Added ftol and xtol, and reduced maxfev to strictly prevent solver infinite loops
             popt, pcov = curve_fit(
-                meta['func'], time_array, mass_array, 
+                fit_func, time_array, mass_array,
                 p0=p0, bounds=bounds, 
                 maxfev=2000, ftol=1e-5, xtol=1e-5
             )
             
-            predictions = meta['func'](time_array, *popt)
+            predictions = fit_func(time_array, *popt)
             rss = np.sum((mass_array - predictions)**2)
             if rss <= 0: rss = 1e-15
 
