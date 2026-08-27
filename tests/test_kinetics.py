@@ -1,8 +1,14 @@
 import unittest
 
 import numpy as np
+import pandas as pd
 
-from src.kinetics import elovich_model, fit_stage_kinetics, hyperbola_model
+from src.kinetics import (
+    build_stage_kinetics_table,
+    elovich_model,
+    fit_stage_kinetics,
+    hyperbola_model,
+)
 
 
 class HyperbolaModelTests(unittest.TestCase):
@@ -90,6 +96,56 @@ class ElovichModelTests(unittest.TestCase):
         )
 
         self.assertIn('ELO', result['df']['Model'].tolist())
+
+
+class StageOneReportingTests(unittest.TestCase):
+    def test_early_models_are_scoped_and_excluded_from_selection(self):
+        time = np.linspace(0.0, 200.0, 201)
+        mass = 8.0 * (1.0 - np.exp(-0.03 * time))
+
+        result = fit_stage_kinetics(
+            time, mass, m_eq_guess=8.0, k_guess=0.03,
+            direction='sorption',
+        )
+        fickian = result['df'].loc[result['df']['Model'] == 'F'].iloc[0]
+
+        self.assertFalse(fickian['Selection_Eligible'])
+        self.assertLess(fickian['N_Fit'], len(time))
+        self.assertTrue(np.isnan(fickian['Delta_BIC']))
+        self.assertNotEqual(result['best_model'], 'F')
+
+    def test_covariance_diagnostics_are_stored(self):
+        time = np.linspace(0.0, 200.0, 201)
+        mass = 8.0 * (1.0 - np.exp(-0.03 * time))
+        result = fit_stage_kinetics(
+            time, mass, m_eq_guess=8.0, k_guess=0.03,
+            direction='sorption',
+        )
+        exp_row = result['df'].loc[result['df']['Model'] == 'EXP'].iloc[0]
+
+        self.assertTrue(exp_row['Success'])
+        self.assertEqual(exp_row['correlation'].shape, (2, 2))
+        np.testing.assert_allclose(np.diag(exp_row['correlation']), 1.0)
+        self.assertEqual(len(exp_row['relative_se']), 2)
+        self.assertTrue(np.isfinite(exp_row['max_abs_rho']))
+
+    def test_stage_table_marks_truncated_selection_provisional(self):
+        time = np.linspace(0.0, 100.0, 101)
+        mass = 5.0 * (1.0 - np.exp(-0.04 * time))
+        stage = pd.DataFrame({
+            'stage_id': 2,
+            'direction': 'Sorption',
+            'time_minutes_': time,
+            'mass_change_pct': mass,
+            'dm_dt_minute_': np.r_[np.zeros(100), 0.003],
+            'rounded_rh': 10.0,
+        })
+
+        table, details = build_stage_kinetics_table(stage)
+
+        self.assertIn('truncated', table.iloc[0]['flags'])
+        self.assertIn('selection_provisional', table.iloc[0]['flags'])
+        self.assertIn(2, details)
 
 
 if __name__ == '__main__':
